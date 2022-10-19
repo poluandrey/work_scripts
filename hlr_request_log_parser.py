@@ -323,7 +323,8 @@ def parse_line(line: str,
                resp: Dict[str, Dict[str, Dict]],
                unknown_source: Dict[str, int]):
     if "request started" in line:
-        start_req_format = r"^(.*): request started. Request ID: (\d*).*DNIS: (\d*); source name: (\w*)"
+        start_req_format = (r"^(.*): request started. Request ID: "
+                            r"(\d*).*DNIS: (\d*); source name: (\w*)")
         start_time, req_id, msisdn, source = re.search(start_req_format, line).groups()
         try:
             resp[source][req_id] = {
@@ -344,7 +345,8 @@ def parse_line(line: str,
     if "request ended" in line:
         end_resp_format = (r".*Request ID: (\d*);.*MCCMNC: (\d{0,6}); "
                            r"result: (.*); proctime: (\d*\.\d*);.*"
-                           r"ported: (\d*); cached: (\d*); source name: (\w*);.* message: (.*)")
+                           r"ported: (\d*); cached: (\d*); source name: "
+                           r"(\w*);.* message: (.*)")
         search = re.search(
             end_resp_format,
             line,
@@ -419,57 +421,64 @@ def calculate_summary(parsed_log: Dict[str, Dict[str, Dict]]):
     for source, requests in parsed_log.items():
         request_cnt = len(requests)
         if request_cnt:
-            resp_details = [value for value in requests.values()]
-            failed_requests = list(filter(lambda x: x["result"] == "-1", resp_details))
-            failed_request_count = len(failed_requests)
-            failed_by_country = group_failed_requests(failed_requests)
-            cached_request = len(list(filter(lambda x: x["cached"] == "1", resp_details)))
-            min_proc_time = min(
-                [
-                    float(detail.get("proc_time"))
-                    for detail in resp_details
-                    if detail.get("proc_time") is not None and detail.get("cached") == "0"
-                ]
-            )
-            max_proc_time = max(
-                [
-                    float(detail.get("proc_time"))
-                    for detail in resp_details
-                    if detail.get("proc_time") is not None
-                ]
-            )
-            without_resp = list(filter(lambda x: x["result"] is None, resp_details))
-            requests_without_response_detail = [
-                (resp.get("start_time"), resp.get("msisdn")) for resp in without_resp
-            ]
-            resp_time_th1 = 0
-            resp_time_th2 = 0
-            resp_time_th3 = 0
-            for parsed_log in resp_details:
-                if parsed_log["cached"] == "0" and parsed_log["result"]:
-                    if float(parsed_log["proc_time"]) <= 7:
-                        resp_time_th1 += 1
-                    elif 7 < float(parsed_log["proc_time"]) <= 10:
-                        resp_time_th2 += 1
-                    else:
-                        resp_time_th3 += 1
-            print(source)
-            print('=' * 100)
-            print(f"{request_cnt=}")
-            print(f"{failed_request_count=}")
-            print(f"{failed_by_country=}")
-            print(f"{cached_request=}")
-            print(f"{min_proc_time=}")
-            print(f"{max_proc_time=}")
-            print(f"requests_without_response={len(without_resp)}")
-            print(f"{requests_without_response_detail=}")
-            print(f"{resp_time_th1=}")
-            print(f"{resp_time_th2=}")
-            print(f"{resp_time_th3=}")
-            print('=' * 100)
+            calculate_summary_by_source(request_cnt, requests, source)
 
 
-def group_failed_requests(failed_requests: List[Dict[str, str]]) -> Dict[str, int]:
+def calculate_summary_by_source(request_cnt, requests, source):
+    resp_details = [value for value in requests.values()]
+    failed_requests = list(filter(lambda x: x["result"] == "-1", resp_details))
+    failed_request_count = len(failed_requests)
+    failed_by_country = group_failed_requests(failed_requests)
+    cached_request = len(
+        list(filter(lambda x: x["cached"] == "1", resp_details))
+    )
+    min_proc_time = min(
+        [
+            float(detail.get("proc_time"))
+            for detail in resp_details
+            if detail.get("proc_time") is not None and detail.get("cached") == "0"
+        ]
+    )
+    max_proc_time = max(
+        [
+            float(detail.get("proc_time"))
+            for detail in resp_details
+            if detail.get("proc_time") is not None
+        ]
+    )
+    without_resp = list(filter(lambda x: x["result"] is None, resp_details))
+    requests_without_response_detail = [
+        (resp.get("start_time"), resp.get("msisdn")) for resp in without_resp
+    ]
+    resp_time_th1 = 0
+    resp_time_th2 = 0
+    resp_time_th3 = 0
+    for parsed_log in resp_details:
+        if parsed_log["cached"] == "0" and parsed_log["result"]:
+            if float(parsed_log["proc_time"]) <= 7:
+                resp_time_th1 += 1
+            elif 7 < float(parsed_log["proc_time"]) <= 10:
+                resp_time_th2 += 1
+            else:
+                resp_time_th3 += 1
+    print(source)
+    print('=' * 100)
+    print(f"{request_cnt=}")
+    print(f"{failed_request_count=}")
+    print(f"{failed_by_country=}")
+    print(f"{cached_request=}")
+    print(f"{min_proc_time=}")
+    print(f"{max_proc_time=}")
+    print(f"requests_without_response={len(without_resp)}")
+    print(f"{requests_without_response_detail=}")
+    print(f"{resp_time_th1=}")
+    print(f"{resp_time_th2=}")
+    print(f"{resp_time_th3=}")
+    print('=' * 100)
+
+
+def group_failed_requests(
+        failed_requests: List[Dict[str, str]]) -> Dict[str, int]:
     failed_by_country = {}
     for failed_request in failed_requests:
         matched_cc = []
