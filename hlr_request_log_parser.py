@@ -308,46 +308,66 @@ def arg_parse():
     return parser.parse_args()
 
 
-def parse_log(file_in: str) -> Dict:
-    resp = {}
+def parse_log(file_in: str) -> Dict[str, Dict[str, Dict]]:
+    resp: Dict[str, Dict[str, Dict]] = {source: {} for source in SOURCES}
+    request_not_found = 0
+    unknown_source = {}
     with open(file_in, "r") as f:
         for line in f:
-            if "request started" in line:
-                start_time, req_id, msisdn = re.search(
-                    r"^(.*): request started. Request ID: (\d*).*DNIS: (\d*)", line
-                ).groups()
-                resp[req_id] = {
-                    "start_time": start_time,
-                    "msisdn": msisdn,
-                    "mccmnc": None,
-                    "result": None,
-                    "proc_time": None,
-                    "ported": None,
-                    "cached": None,
-                    "message": None,
-                }
-            if "request ended" in line:
-                search = re.search(
-                    r".*Request ID: (\d*);.*MCCMNC: (\d{0,6}); "
-                    r"result: (.*); proctime: (\d*\.\d*);.*"
-                    r"ported: (\d*); cached: (\d*);.*message: (.*)",
-                    line,
-                )
-                (
-                    req_id,
-                    mccmnc,
-                    result,
-                    proc_time,
-                    ported,
-                    cached,
-                    message,
-                ) = search.groups()
-                resp[req_id]["mccmnc"] = mccmnc
-                resp[req_id]["result"] = result
-                resp[req_id]["proc_time"] = proc_time
-                resp[req_id]["ported"] = ported
-                resp[req_id]["cached"] = cached
-                resp[req_id]["message"] = message
+            resp = parse_line(line, request_not_found, resp, unknown_source)
+    return resp
+
+
+def parse_line(line: str,
+               request_not_found: int,
+               resp: Dict[str, Dict[str, Dict]],
+               unknown_source: Dict[str, int]):
+    if "request started" in line:
+        start_req_format = r"^(.*): request started. Request ID: (\d*).*DNIS: (\d*); source name: (\w*)"
+        start_time, req_id, msisdn, source = re.search(start_req_format, line).groups()
+        try:
+            resp[source][req_id] = {
+                "start_time": start_time,
+                "msisdn": msisdn,
+                "mccmnc": None,
+                "result": None,
+                "proc_time": None,
+                "ported": None,
+                "cached": None,
+                "message": None,
+            }
+        except KeyError:
+            if source in unknown_source.keys():
+                unknown_source[source] += 1
+            else:
+                unknown_source[source] = 1
+    if "request ended" in line:
+        end_resp_format = (r".*Request ID: (\d*);.*MCCMNC: (\d{0,6}); "
+                           r"result: (.*); proctime: (\d*\.\d*);.*"
+                           r"ported: (\d*); cached: (\d*); source name: (\w*);.* message: (.*)")
+        search = re.search(
+            end_resp_format,
+            line,
+        )
+        (
+            req_id,
+            mccmnc,
+            result,
+            proc_time,
+            ported,
+            cached,
+            source,
+            message,
+        ) = search.groups()
+        try:
+            resp[source][req_id]["mccmnc"] = mccmnc
+            resp[source][req_id]["result"] = result
+            resp[source][req_id]["proc_time"] = proc_time
+            resp[source][req_id]["ported"] = ported
+            resp[source][req_id]["cached"] = cached
+            resp[source][req_id]["message"] = message
+        except KeyError:
+            request_not_found += 1
     return resp
 
 
@@ -395,53 +415,58 @@ def converter_command(arguments):
     print(f"log saved to {file_out}")
 
 
-def calculate_summary(resp: Dict[str, Dict[str, str]]):
-    total_request = len(resp)
-    resp_details = [value for value in resp.values()]
-    failed_requests = list(filter(lambda x: x["result"] == "-1", resp_details))
-    failed_request_count = len(failed_requests)
-    failed_by_country = group_failed_requests(failed_requests)
-    cached_request = len(list(filter(lambda x: x["cached"] == "1", resp_details)))
-    min_proc_time = min(
-        [
-            float(detail.get("proc_time"))
-            for detail in resp_details
-            if detail.get("proc_time") is not None and detail.get("cached") == "0"
-        ]
-    )
-    max_proc_time = max(
-        [
-            float(detail.get("proc_time"))
-            for detail in resp_details
-            if detail.get("proc_time") is not None
-        ]
-    )
-    without_resp = list(filter(lambda x: x["result"] is None, resp_details))
-    requests_without_response_detail = [
-        (resp.get("start_time"), resp.get("msisdn")) for resp in without_resp
-    ]
-    resp_time_th1 = 0
-    resp_time_th2 = 0
-    resp_time_th3 = 0
-    for resp in resp_details:
-        if resp["cached"] == "0" and resp["result"]:
-            if float(resp["proc_time"]) <= 7:
-                resp_time_th1 += 1
-            elif 7 < float(resp["proc_time"]) <= 10:
-                resp_time_th2 += 1
-            else:
-                resp_time_th3 += 1
-    print(f"{total_request=}")
-    print(f"{failed_request_count=}")
-    print(f"{failed_by_country=}")
-    print(f"{cached_request=}")
-    print(f"{min_proc_time=}")
-    print(f"{max_proc_time=}")
-    print(f"requests_without_response={len(without_resp)}")
-    print(f"{requests_without_response_detail=}")
-    print(f"{resp_time_th1=}")
-    print(f"{resp_time_th2=}")
-    print(f"{resp_time_th3=}")
+def calculate_summary(parsed_log: Dict[str, Dict[str, Dict]]):
+    for source, requests in parsed_log.items():
+        request_cnt = len(requests)
+        if request_cnt:
+            resp_details = [value for value in requests.values()]
+            failed_requests = list(filter(lambda x: x["result"] == "-1", resp_details))
+            failed_request_count = len(failed_requests)
+            failed_by_country = group_failed_requests(failed_requests)
+            cached_request = len(list(filter(lambda x: x["cached"] == "1", resp_details)))
+            min_proc_time = min(
+                [
+                    float(detail.get("proc_time"))
+                    for detail in resp_details
+                    if detail.get("proc_time") is not None and detail.get("cached") == "0"
+                ]
+            )
+            max_proc_time = max(
+                [
+                    float(detail.get("proc_time"))
+                    for detail in resp_details
+                    if detail.get("proc_time") is not None
+                ]
+            )
+            without_resp = list(filter(lambda x: x["result"] is None, resp_details))
+            requests_without_response_detail = [
+                (resp.get("start_time"), resp.get("msisdn")) for resp in without_resp
+            ]
+            resp_time_th1 = 0
+            resp_time_th2 = 0
+            resp_time_th3 = 0
+            for parsed_log in resp_details:
+                if parsed_log["cached"] == "0" and parsed_log["result"]:
+                    if float(parsed_log["proc_time"]) <= 7:
+                        resp_time_th1 += 1
+                    elif 7 < float(parsed_log["proc_time"]) <= 10:
+                        resp_time_th2 += 1
+                    else:
+                        resp_time_th3 += 1
+            print(source)
+            print('=' * 100)
+            print(f"{request_cnt=}")
+            print(f"{failed_request_count=}")
+            print(f"{failed_by_country=}")
+            print(f"{cached_request=}")
+            print(f"{min_proc_time=}")
+            print(f"{max_proc_time=}")
+            print(f"requests_without_response={len(without_resp)}")
+            print(f"{requests_without_response_detail=}")
+            print(f"{resp_time_th1=}")
+            print(f"{resp_time_th2=}")
+            print(f"{resp_time_th3=}")
+            print('=' * 100)
 
 
 def group_failed_requests(failed_requests: List[Dict[str, str]]) -> Dict[str, int]:
