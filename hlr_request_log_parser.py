@@ -2,7 +2,10 @@ import argparse
 import csv
 import pathlib
 import re
+from textwrap import wrap
 from typing import Dict, List
+
+from terminaltables import AsciiTable
 
 COUNTRY_CODES = [
     "1",
@@ -287,6 +290,12 @@ def arg_parse():
         help="return summary for provided log file",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    summary_parser.add_argument(
+        '--source',
+        required=False,
+        nargs='?',
+        default=None,
+    )
     summary_parser.set_defaults(callback=summary_command)
 
     converter_parser = subparser.add_parser(
@@ -309,25 +318,36 @@ def arg_parse():
 
 
 def parse_log(file_in: str) -> Dict[str, Dict[str, Dict]]:
-    resp: Dict[str, Dict[str, Dict]] = {source: {} for source in SOURCES}
+    """
+    parse hlr log.
+    return dict with source as key and dict with requests
+    """
+    parsed_log: Dict[str, Dict[str, Dict]] = {source: {} for source in SOURCES}
     request_not_found = 0
     unknown_source = {}
     with open(file_in, "r") as f:
         for line in f:
-            resp = parse_line(line, request_not_found, resp, unknown_source)
-    return resp
+            parsed_log = parse_line(line,
+                                    request_not_found,
+                                    parsed_log,
+                                    unknown_source)
+    return parsed_log
 
 
 def parse_line(line: str,
                request_not_found: int,
-               resp: Dict[str, Dict[str, Dict]],
+               parsed_log: Dict[str, Dict[str, Dict]],
                unknown_source: Dict[str, int]):
+    """
+    parse log line(request or response) and add parsed data to parsed_log
+    """
     if "request started" in line:
         start_req_format = (r"^(.*): request started. Request ID: "
                             r"(\d*).*DNIS: (\d*); source name: (\w*)")
-        start_time, req_id, msisdn, source = re.search(start_req_format, line).groups()
+        start_time, req_id, msisdn, source = re.search(start_req_format,
+                                                       line).groups()
         try:
-            resp[source][req_id] = {
+            parsed_log[source][req_id] = {
                 "start_time": start_time,
                 "msisdn": msisdn,
                 "mccmnc": None,
@@ -362,18 +382,21 @@ def parse_line(line: str,
             message,
         ) = search.groups()
         try:
-            resp[source][req_id]["mccmnc"] = mccmnc
-            resp[source][req_id]["result"] = result
-            resp[source][req_id]["proc_time"] = proc_time
-            resp[source][req_id]["ported"] = ported
-            resp[source][req_id]["cached"] = cached
-            resp[source][req_id]["message"] = message
+            parsed_log[source][req_id]["mccmnc"] = mccmnc
+            parsed_log[source][req_id]["result"] = result
+            parsed_log[source][req_id]["proc_time"] = proc_time
+            parsed_log[source][req_id]["ported"] = ported
+            parsed_log[source][req_id]["cached"] = cached
+            parsed_log[source][req_id]["message"] = message
         except KeyError:
             request_not_found += 1
-    return resp
+    return parsed_log
 
 
 def write_log(file_out, parsed_log):
+    """
+    write in file_out in csv format parsed_log
+    """
     with open(file_out, "w") as f:
         csv_writer = csv.writer(f, delimiter=";")
         rows = [
@@ -403,11 +426,19 @@ def write_log(file_out, parsed_log):
 
 
 def summary_command(arguments):
+    """
+    command to calculate and display summary by all or provided source
+    """
     parsed_log = parse_log(file_in=arguments.file)
-    calculate_summary(parsed_log)
+    summary = calculate_summary(parsed_log, source=arguments.source)
+    for source, table_data in summary:
+        display_table(table_data, source)
 
 
 def converter_command(arguments):
+    """
+    command to convert log file in to csv
+    """
     parsed_log = parse_log(arguments.file)
     file_in = pathlib.Path(arguments.file)
     file_out = pathlib.Path.joinpath(
@@ -417,14 +448,36 @@ def converter_command(arguments):
     print(f"log saved to {file_out}")
 
 
-def calculate_summary(parsed_log: Dict[str, Dict[str, Dict]]):
+def calculate_summary(
+        parsed_log: Dict[str, Dict[str, Dict]],
+        source: str = None):
+    """
+    iter over parsed_log and run calculate_summary_by_source
+    for all source requests
+    """
+    summary = []
+    if source:
+        requests = parsed_log.get(source)
+        request_cnt = len(requests)
+        if request_cnt:
+            summary_by_source = calculate_summary_by_source(request_cnt,
+                                                            requests)
+            summary.append((source, summary_by_source))
+            return summary
     for source, requests in parsed_log.items():
         request_cnt = len(requests)
         if request_cnt:
-            calculate_summary_by_source(request_cnt, requests, source)
+            summary_by_source = calculate_summary_by_source(
+                request_cnt,
+                requests)
+            summary.append((source, summary_by_source))
+    return summary
 
 
-def calculate_summary_by_source(request_cnt, requests, source):
+def calculate_summary_by_source(request_cnt, requests):
+    """
+    calculate summary for requests
+    """
     resp_details = [value for value in requests.values()]
     failed_requests = list(filter(lambda x: x["result"] == "-1", resp_details))
     failed_request_count = len(failed_requests)
@@ -461,24 +514,45 @@ def calculate_summary_by_source(request_cnt, requests, source):
                 resp_time_th2 += 1
             else:
                 resp_time_th3 += 1
-    print(source)
-    print('=' * 100)
-    print(f"{request_cnt=}")
-    print(f"{failed_request_count=}")
-    print(f"{failed_by_country=}")
-    print(f"{cached_request=}")
-    print(f"{min_proc_time=}")
-    print(f"{max_proc_time=}")
-    print(f"requests_without_response={len(without_resp)}")
-    print(f"{requests_without_response_detail=}")
-    print(f"{resp_time_th1=}")
-    print(f"{resp_time_th2=}")
-    print(f"{resp_time_th3=}")
-    print('=' * 100)
+    table = (
+        ['request count', request_cnt],
+        ['failed request', failed_request_count],
+        ['failed by country', failed_by_country],
+        ['cached request', cached_request],
+        ['min proc time', min_proc_time],
+        ['max proc time', max_proc_time],
+        ['requests without response', len(without_resp)],
+        [
+            'requests without response details',
+            requests_without_response_detail],
+        ['resp time th1', resp_time_th1],
+        ['resp time th2', resp_time_th2],
+        ['resp time th3', resp_time_th3]
+    )
+    return table
+
+
+def display_table(table, source):
+    """
+    print summary table in the console
+    """
+    table_instance = AsciiTable(table, title=source.upper())
+    max_width = table_instance.column_max_width(1)
+    table_instance.inner_heading_row_border = False
+    table_instance.inner_row_border = True
+    table_instance.justify_columns = {0: 'center', 1: 'center'}
+    for idx in range(0, 11):
+        wrapped_string = '\n'.join(wrap(str(table_instance.table_data[idx][1]),
+                                        max_width))
+        table_instance.table_data[idx][1] = wrapped_string
+    print(table_instance.table)
 
 
 def group_failed_requests(
         failed_requests: List[Dict[str, str]]) -> Dict[str, int]:
+    """
+    grouping failed requests by country and return dict[country_code, count]
+    """
     failed_by_country = {}
     for failed_request in failed_requests:
         matched_cc = []
